@@ -2,7 +2,6 @@ package crushmap
 
 import (
 	"fmt"
-	"sync"
 )
 
 type textParser struct {
@@ -67,13 +66,9 @@ func topState(l *lex) stateFn {
 			return identState
 		}
 	}
-
-	return nil
 }
 
 func (cmap *Map) DecodeText(data []byte) error {
-	var mu sync.Mutex
-
 	mapItems := make(map[string]int32)
 	p := &textParser{l: lexNew(string(data), topState)}
 	p.l.lexStartSync()
@@ -99,18 +94,14 @@ loop:
 			if idevice, err := p.handleDevice(); err != nil {
 				return err
 			} else {
-				mu.Lock()
 				mapItems[idevice.Name] = idevice.ID
-				mu.Unlock()
 				cmap.Devices = append(cmap.Devices, idevice)
 			}
 		case itemTypeBeg:
 			if itype, err := p.handleType(); err != nil {
 				return err
 			} else {
-				mu.Lock()
 				mapItems[itype.Name] = itype.ID
-				mu.Unlock()
 				cmap.Types = append(cmap.Types, itype)
 			}
 		case itemRuleBeg:
@@ -123,9 +114,7 @@ loop:
 			if ibucket, err := p.handleBucket(tok.ivalue); err != nil {
 				return err
 			} else {
-				mu.Lock()
 				mapItems[ibucket.Name] = ibucket.ID
-				mu.Unlock()
 				cmap.Buckets = append(cmap.Buckets, ibucket)
 			}
 		default:
@@ -139,6 +128,17 @@ loop:
 			return fmt.Errorf("invalid bucket type: %s", cmap.Buckets[idx].TypeName)
 		}
 		cmap.Buckets[idx].TypeID = CrushBucketType(id)
+
+		for _, it := range cmap.Buckets[idx].Items {
+			if it.Name == "" {
+				continue
+			}
+			iid, ok := mapItems[it.Name]
+			if !ok {
+				return fmt.Errorf("bucket %s: unknown item %s", cmap.Buckets[idx].Name, it.Name)
+			}
+			it.ID = iid
+		}
 	}
 
 	cmap.rulesSort()

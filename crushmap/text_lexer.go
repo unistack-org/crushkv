@@ -63,10 +63,13 @@ const (
 	itemRuleStepTake
 	itemRuleStepTakeType
 	itemRuleStepChoose
+	itemRuleStepChooseMSR
 	itemRuleStepTakeClass
-	itemRuleStepChooseFirstN
-	itemRuleStepChooseIndep
+	itemRuleStepChooseMode
+	itemRuleStepChooseNum
 	itemRuleStepChooseType
+	itemRuleStepSetGenericName
+	itemRuleStepSetGeneric
 	itemRuleStepEmit
 	itemRuleStepEnd
 	itemRuleEnd

@@ -56,27 +56,61 @@ loop:
 	}
 
 	switch l.lexCurrent() {
-	case "id":
+	case "id", "ruleset":
+		// Ceph grammar: (id | ruleset) >> posint; both set the rule id.
 		l.lexIgnore()
-		return ruleRuleIDState
-	case "ruleset":
-		l.lexIgnore()
-		return ruleRulesetState
+		lexSignedInt(l)
+		l.lexEmitTrim(itemRuleID)
+		return ruleIdentState
 	case "min_size":
 		l.lexIgnore()
-		return ruleMinSizeState
+		lexSignedInt(l)
+		l.lexEmitTrim(itemRuleMinSize)
+		return ruleIdentState
 	case "max_size":
 		l.lexIgnore()
-		return ruleMaxSizeState
+		lexSignedInt(l)
+		l.lexEmitTrim(itemRuleMaxSize)
+		return ruleIdentState
 	case "type":
 		l.lexIgnore()
-		return ruleTypeState
+		lexTokenToEmit(l)
+		l.lexEmit(itemRuleType)
+		return ruleIdentState
 	case "step":
 		l.lexIgnore()
 		l.lexEmit(itemRuleStepBeg)
 		return ruleStepIdentState
 	}
 	return l.lexPop()
+}
+
+// lexSignedInt consumes an optional '-' followed by digits. Ceph's grammar
+// uses integer (not posint) for the choose num: `chooseleaf firstn -1 type
+// host` is the standard replicated rule, so the minus sign must parse.
+func lexSignedInt(l *lex) {
+	l.lexTake(" \t")
+	l.lexIgnore()
+	if l.lexPeek() == '-' {
+		l.lexNext()
+	}
+	l.lexTake("0123456789")
+}
+
+// lexTokenToEmit consumes whitespace plus one bare token up to whitespace,
+// newline, '#', EOFRune or '}'.
+func lexTokenToEmit(l *lex) {
+	l.lexTake(" \t")
+	l.lexIgnore()
+	for {
+		r := l.lexPeek()
+		switch r {
+		case ' ', '\n', '#', '\t', '}', EOFRune:
+			return
+		default:
+			l.lexNext()
+		}
+	}
 }
 
 func ruleStepIdentState(l *lex) stateFn {
@@ -95,170 +129,101 @@ loop:
 	}
 
 	switch l.lexCurrent() {
-	case "set_chooseleaf_tries":
+	case "set_chooseleaf_tries", "set_choose_tries",
+		"set_choose_local_tries", "set_choose_local_fallback_tries",
+		"set_chooseleaf_vary_r", "set_chooseleaf_stable",
+		"set_msr_descents", "set_msr_collision_tries":
+		name := l.lexCurrent()
 		l.lexIgnore()
-		return ruleStepSetChooseleafTries
-	case "set_choose_tries":
-		l.lexIgnore()
-		return ruleStepSetChooseTries
+		l.items <- item{itype: itemRuleStepSetGenericName, ivalue: name}
+		lexSignedInt(l)
+		l.lexEmitTrim(itemRuleStepSetGeneric)
+		l.lexEmit(itemRuleStepEnd)
+		return ruleIdentState
 	case "take":
 		l.lexIgnore()
 		l.lexEmit(itemRuleStepTake)
 		return ruleStepTake
-	case "chooseleaf", "choose":
+	case "choose", "chooseleaf":
 		l.lexEmit(itemRuleStepChoose)
 		return ruleStepChoose
+	case "choosemsr":
+		l.lexEmit(itemRuleStepChooseMSR)
+		// choosemsr <int> type <name>
+		lexSignedInt(l)
+		l.lexEmitTrim(itemRuleStepChooseNum)
+		mark := l.position
+		lexTokenToEmit(l)
+		if l.lexCurrent() == "type" {
+			l.lexIgnore()
+			lexTokenToEmit(l)
+			l.lexEmit(itemRuleStepChooseType)
+		} else {
+			l.position = mark
+			l.rewind.clear()
+		}
+		l.lexEmit(itemRuleStepEnd)
+		return ruleIdentState
 	case "emit":
 		l.lexEmit(itemRuleStepEmit)
-		return ruleStepEmit
+		l.lexEmit(itemRuleStepEnd)
+		return ruleIdentState
 	}
 
 	return ruleIdentState
 }
 
-func ruleStepSetChooseleafTries(l *lex) stateFn {
-	l.lexTake("0123456789")
-	l.lexEmit(itemRuleStepSetChooseleafTries)
-	return ruleIdentState
-}
-
-func ruleStepSetChooseTries(l *lex) stateFn {
-	l.lexTake("0123456789")
-	l.lexEmit(itemRuleStepSetChooseTries)
-	return ruleIdentState
-}
-
+// ruleStepChoose parses: (indep|firstn) <int> [type <name>]
 func ruleStepChoose(l *lex) stateFn {
-	l.lexTake(" \t")
-	l.lexIgnore()
+	lexTokenToEmit(l)
+	mode := l.lexCurrent()
+	switch mode {
+	case "firstn", "indep":
+		l.lexIgnore()
+		l.items <- item{itype: itemRuleStepChooseMode, ivalue: mode}
 
-loop:
-	for {
-		r := l.lexPeek()
-		switch r {
-		case ' ', '\n', '#', '\t':
-			break loop
-		default:
-			l.lexNext()
+		lexSignedInt(l)
+		l.lexEmitTrim(itemRuleStepChooseNum)
+
+		mark := l.position
+		lexTokenToEmit(l)
+		if l.lexCurrent() == "type" {
+			l.lexIgnore()
+			lexTokenToEmit(l)
+			l.lexEmit(itemRuleStepChooseType)
+		} else {
+			l.position = mark
+			l.rewind.clear()
 		}
-	}
-
-	switch l.lexCurrent() {
-	case "firstn":
-		l.lexIgnore()
-		return ruleStepChooseFirstN
-	case "indep":
-		l.lexIgnore()
-		return ruleStepChooseIndep
+		l.lexEmit(itemRuleStepEnd)
+		return ruleIdentState
 	case "type":
+		// legacy crushkv syntax: "choose type <name>"
 		l.lexIgnore()
-		return ruleStepChooseType
+		lexTokenToEmit(l)
+		l.lexEmit(itemRuleStepChooseType)
+		return ruleStepChoose
 	}
-
-	l.lexEmit(itemRuleStepEnd)
-	return ruleIdentState
-}
-
-func ruleStepChooseFirstN(l *lex) stateFn {
-	l.lexTake(" \t")
-	l.lexIgnore()
-	l.lexTake("0123456789")
-	l.lexEmit(itemRuleStepChooseFirstN)
-	return ruleStepChoose
-}
-
-func ruleStepChooseIndep(l *lex) stateFn {
-	l.lexTake(" \t")
-	l.lexIgnore()
-	l.lexTake("0123456789")
-	l.lexEmit(itemRuleStepChooseIndep)
-	return ruleStepChoose
-}
-
-func ruleStepChooseType(l *lex) stateFn {
-	l.lexTake(" \t")
-	l.lexIgnore()
-
-loop:
-	for {
-		r := l.lexPeek()
-		switch r {
-		case ' ', '\n', '#', '\t':
-			break loop
-		default:
-			l.lexNext()
-		}
-	}
-
-	l.lexEmit(itemRuleStepChooseType)
-	return ruleStepChoose
-}
-
-func ruleStepEmit(l *lex) stateFn {
-	l.lexTake(" \t")
-	l.lexIgnore()
 
 	l.lexEmit(itemRuleStepEnd)
 	return ruleIdentState
 }
 
 func ruleStepTake(l *lex) stateFn {
-	l.lexTake(" \t")
-	l.lexIgnore()
-
-loop1:
-	for {
-		r := l.lexPeek()
-		switch r {
-		case ' ', '\n', '#', '\t':
-			break loop1
-		default:
-			l.lexNext()
-		}
-	}
-
+	lexTokenToEmit(l)
 	l.lexEmit(itemRuleStepTakeType)
 
-	l.lexTake(" \t")
-	l.lexIgnore()
-
-loop2:
-	for {
-		r := l.lexPeek()
-		switch r {
-		case ' ', '\n', '#', '\t':
-			break loop2
-		default:
-			l.lexNext()
-		}
-	}
-
-	switch l.lexCurrent() {
-	case "class":
+	mark := l.position
+	lexTokenToEmit(l)
+	if l.lexCurrent() == "class" {
 		l.lexIgnore()
-		return ruleStepTakeClass
+		lexTokenToEmit(l)
+		l.lexEmit(itemRuleStepTakeClass)
+	} else {
+		l.position = mark
+		l.rewind.clear()
 	}
 
-	l.lexEmit(itemRuleStepEnd)
-	return ruleIdentState
-}
-
-func ruleStepTakeClass(l *lex) stateFn {
-	l.lexTake(" \t")
-	l.lexIgnore()
-
-loop:
-	for {
-		r := l.lexPeek()
-		switch r {
-		case ' ', '\n', '#', '\t':
-			break loop
-		default:
-			l.lexNext()
-		}
-	}
-
-	l.lexEmit(itemRuleStepTakeClass)
 	l.lexEmit(itemRuleStepEnd)
 	return ruleIdentState
 }
@@ -285,67 +250,6 @@ loop:
 	return ruleIdentState
 }
 
-func ruleRulesetState(l *lex) stateFn {
-	l.lexTake(" \t")
-	l.lexIgnore()
-	for {
-		r := l.lexPeek()
-		if r == '\n' || r == ' ' || r == '#' {
-			break
-		}
-		l.lexNext()
-	}
-
-	l.lexEmit(itemRuleRuleset)
-	return ruleIdentState
-}
-
-func ruleRuleIDState(l *lex) stateFn {
-	l.lexTake(" \t")
-	l.lexIgnore()
-	for {
-		r := l.lexPeek()
-		if r == '\n' || r == ' ' || r == '#' {
-			break
-		}
-		l.lexNext()
-	}
-
-	l.lexEmit(itemRuleID)
-	return ruleIdentState
-}
-
-func ruleMinSizeState(l *lex) stateFn {
-	l.lexTake(" \t")
-	l.lexIgnore()
-	l.lexTake("0123456789")
-	l.lexEmit(itemRuleMinSize)
-	return ruleIdentState
-}
-
-func ruleMaxSizeState(l *lex) stateFn {
-	l.lexTake(" \t")
-	l.lexIgnore()
-	l.lexTake("0123456789")
-	l.lexEmit(itemRuleMaxSize)
-	return ruleIdentState
-}
-
-func ruleTypeState(l *lex) stateFn {
-	l.lexTake(" \t")
-	l.lexIgnore()
-
-	for {
-		r := l.lexPeek()
-		if r == '\n' || r == ' ' || r == '#' {
-			break
-		}
-		l.lexNext()
-	}
-	l.lexEmit(itemRuleType)
-	return ruleIdentState
-}
-
 func (p *textParser) handleRule() (*Rule, error) {
 	irule := &Rule{}
 
@@ -360,12 +264,6 @@ Loop:
 			break Loop
 		case itemComment:
 			continue
-		case itemRuleRuleset:
-			id, err := strconv.Atoi(tok.ivalue)
-			if err != nil {
-				return nil, err
-			}
-			irule.Ruleset = uint8(id)
 		case itemRuleMinSize:
 			id, err := strconv.Atoi(tok.ivalue)
 			if err != nil {
@@ -379,26 +277,28 @@ Loop:
 			}
 			irule.MaxSize = uint8(id)
 		case itemRuleStepBeg:
-			if istep, err := p.handleRuleStep(); err != nil {
+			istep, err := p.handleRuleStep()
+			if err != nil {
 				return nil, err
-			} else {
-				istep.Num = int32(len(irule.Steps))
-				irule.Steps = append(irule.Steps, istep)
 			}
+			irule.Steps = append(irule.Steps, istep)
 		case itemRuleName:
 			irule.Name = tok.ivalue
 		case itemRuleType:
-			id, err := strconv.Atoi(tok.ivalue)
-			if err != nil {
-				switch tok.ivalue {
-				case "replicated":
-					irule.Type = ReplicatedPG
-				case "erasure":
-					irule.Type = ErasurePG
-				default:
+			switch tok.ivalue {
+			case "replicated":
+				irule.Type = ReplicatedPG
+			case "erasure":
+				irule.Type = ErasurePG
+			case "msr_firstn":
+				irule.Type = 4
+			case "msr_indep":
+				irule.Type = 5
+			default:
+				id, err := strconv.Atoi(tok.ivalue)
+				if err != nil {
 					return nil, errors.New("unknown rule type")
 				}
-			} else {
 				irule.Type = uint8(id)
 			}
 		case itemRuleID:
@@ -407,16 +307,15 @@ Loop:
 				return nil, err
 			}
 			irule.ID = uint8(id)
+			irule.Ruleset = uint8(id) // Ceph: ruleset == rule id
 		}
-	}
-	if irule.ID != irule.Ruleset {
-		irule.Ruleset = irule.ID
 	}
 	return irule, nil
 }
 
 func (p *textParser) handleRuleStep() (*Step, error) {
 	istep := &Step{}
+	var chooseOp string
 
 Loop:
 	for {
@@ -437,25 +336,37 @@ Loop:
 		case itemRuleStepTakeClass:
 			istep.ItemClass = tok.ivalue
 		case itemRuleStepChoose:
-			istep.Op = tok.ivalue
-		case itemRuleStepChooseIndep:
-			istep.Op = fmt.Sprintf("%s_%s", istep.Op, "indep")
+			chooseOp = tok.ivalue // choose | chooseleaf
+		case itemRuleStepChooseMSR:
+			chooseOp = "choosemsr"
+		case itemRuleStepChooseMode:
+			switch chooseOp {
+			case "choose":
+				istep.Op = "choose_" + tok.ivalue
+			case "chooseleaf":
+				istep.Op = "chooseleaf_" + tok.ivalue
+			}
+		case itemRuleStepChooseNum:
 			id, err := strconv.Atoi(tok.ivalue)
 			if err != nil {
 				return nil, err
 			}
 			istep.Num = int32(id)
-		case itemRuleStepChooseFirstN:
-			istep.Op = fmt.Sprintf("%s_%s", istep.Op, "firstn")
-			id, err := strconv.Atoi(tok.ivalue)
-			if err != nil {
-				return nil, err
+			if chooseOp == "choosemsr" {
+				istep.Op = "choosemsr_firstn"
 			}
-			istep.Num = int32(id)
 		case itemRuleStepChooseType:
 			istep.ItemType = tok.ivalue
 		case itemRuleStepEmit:
 			istep.Op = "emit"
+		case itemRuleStepSetGenericName:
+			istep.Op = tok.ivalue
+		case itemRuleStepSetGeneric:
+			id, err := strconv.Atoi(tok.ivalue)
+			if err != nil {
+				return nil, err
+			}
+			istep.Num = int32(id)
 		}
 	}
 	return istep, nil

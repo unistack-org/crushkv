@@ -45,6 +45,7 @@ const (
 	itemBucketHash
 	itemBucketItemBeg
 	itemBucketItemName
+	itemBucketItemType
 	itemBucketItemID
 	itemBucketItemWeight
 	itemBucketItemPos

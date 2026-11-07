@@ -42,17 +42,44 @@ loop:
 		l.lexIgnore()
 		l.lexPush(topState)
 		return tunableState
+	case "max_buckets", "max_rules", "max_rulesets", "max_classes", "max_osd":
+		// Ceph dumps carry these scalar headers. The compiled bucket/map
+		// sizes are recomputed by the compiler, so skip `max_<x> <n>`.
+		l.lexPush(topState)
+		l.lexIgnore()
+		return maxSkipState
 	}
 
 	l.lexPush(topState)
 	return bucketState
 }
 
+// maxSkipState consumes the value (and any trailing comment) of a
+// `max_buckets N`-style header line and returns to the top state.
+func maxSkipState(l *lex) stateFn {
+	l.lexTake(" \t")
+	l.lexIgnore()
+	for {
+		r := l.lexPeek()
+		switch r {
+		case '\n', EOFRune:
+			l.lexIgnore()
+			return l.lexPop()
+		case '#':
+			l.lexNext()
+			l.lexIgnore()
+			l.lexPush(maxSkipState)
+			return commentLineState
+		}
+		l.lexNext()
+	}
+}
+
 func topState(l *lex) stateFn {
 	for {
 		r := l.lexPeek()
 		switch r {
-		case ' ':
+		case ' ', '\t':
 			l.lexNext()
 			l.lexIgnore()
 		case '\n':

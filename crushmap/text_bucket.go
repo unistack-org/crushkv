@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 func bucketState(l *lex) stateFn {
@@ -134,16 +135,42 @@ func bucketAlgState(l *lex) stateFn {
 	return bucketIdentState
 }
 
-func bucketItemState(l *lex) stateFn {
+// lexScanString advances past spaces/tabs and reads one string, stopping
+// before ' ', '\n', '#', '}' or EOFRune. The runes stay inside the pending
+// token (l.start:l.position), so callers must emit or rewind before scanning
+// again.
+func lexScanString(l *lex) (string, bool) {
 	l.lexTake(" \t")
-	l.lexIgnore()
-
-loop:
+	var b strings.Builder
 	for {
 		r := l.lexPeek()
 		switch r {
-		case ' ':
-			break loop
+		case ' ', '\n', '#', '}', EOFRune:
+			return b.String(), b.Len() > 0
+		}
+		l.lexNext()
+		b.WriteRune(r)
+	}
+}
+
+// bucketItemState reads the token(s) after `item`. Ceph accepts two forms:
+//
+//	item <name>                // current form
+//	item <type> <name>         // deprecated positional form
+//
+// We scan the first string, then peek a second space-delimited string on the
+// same line. If a second string follows (and is not a keyword like `id`), the
+// first token is the deprecated type and the second is the name; otherwise the
+// single token is the name. Name resolution drives bucket placement.
+func bucketItemState(l *lex) stateFn {
+	l.lexTake(" \t")
+	l.lexIgnore()
+	mark := l.position
+
+	first, ok := lexScanString(l)
+	if !ok {
+		r := l.lexPeek()
+		switch r {
 		case '\n', '#':
 			l.lexErr(fmt.Sprintf("unexpected token %q", r))
 			return l.lexPop()
@@ -151,11 +178,40 @@ loop:
 			l.lexErr("unexpected end of crush map")
 			return nil
 		}
-		l.lexNext()
 	}
 
+	scan := l.position
+	second, hasSecond := lexScanString(l)
+	if hasSecond && !isItemKeyword(second) {
+		// Positional form: first is the (deprecated) type, second the name.
+		// Trim explicitly: the pending slices carry the separators between
+		// the two strings.
+		end := l.position
+		l.position = mark + len(first)
+		l.lexEmitTrim(itemBucketItemType)
+		l.start = scan
+		l.position = end
+		l.lexEmitTrim(itemBucketItemName)
+		return bucketItemIdentState
+	}
+
+	// Single-token form: rewind to the end of the first string (dropping the
+	// scanned-ahead keyword), then emit it as the name.
+	for l.position > mark+len(first) {
+		l.lexRewind()
+	}
 	l.lexEmitTrim(itemBucketItemName)
 	return bucketItemIdentState
+}
+
+// isItemKeyword reports whether tok terminates an item name, i.e. is one of
+// the keywords accepted in bucketItemIdentState.
+func isItemKeyword(tok string) bool {
+	switch tok {
+	case "id", "weight", "pos", "}":
+		return true
+	}
+	return false
 }
 
 func bucketItemIdentState(l *lex) stateFn {

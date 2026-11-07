@@ -176,3 +176,44 @@ func TestDecodeTextBucketIDClass(t *testing.T) {
 		t.Fatalf("bucket = %+v", b)
 	}
 }
+
+func TestDecodeTextPositionalItem(t *testing.T) {
+	src := "# begin crush map\n" +
+		"device 0 osd.0\ndevice 1 osd.1\ndevice 2 osd.2\ndevice 3 osd.3\n" +
+		"type 0 osd\ntype 1 host\ntype 2 root\n" +
+		"max_buckets 4\nmax_rules 1\n" +
+		"rule data {\n\tid 0\n\ttype replicated\n\tmin_size 1\n\tmax_size 10\n" +
+		"\tstep take r\n\tstep chooseleaf firstn 0 type host\n\tstep emit\n}\n" +
+		"host h1 {\n\tid -3\n\talg straw2\n\thash 0\n" +
+		"\titem osd.0 weight 1.000\n\titem osd.1 weight 1.000\n}\n" +
+		"host h2 {\n\tid -4\n\talg straw2\n\thash 0\n" +
+		"\titem osd.2 weight 1.000\n\titem osd.3 weight 1.000\n}\n" +
+		"root r {\n\tid -2\n\talg straw2\n\thash 0\n" +
+		"\titem host h1\n\titem host h2\n}\n"
+	m := NewMap()
+	if err := m.DecodeText([]byte(src)); err != nil {
+		t.Fatalf("DecodeText: %v", err)
+	}
+	var root *Bucket
+	for _, b := range m.Buckets {
+		if b.ID == -2 {
+			root = b
+		}
+	}
+	if root == nil {
+		t.Fatal("root bucket not found")
+	}
+	if len(root.Items) != 2 {
+		t.Fatalf("root has %d items, want 2", len(root.Items))
+	}
+	ids := map[int32]bool{}
+	for _, it := range root.Items {
+		ids[it.ID] = true
+		if it.Name == "host" {
+			t.Fatalf("item resolved to type name 'host' instead of bucket: %+v", it)
+		}
+	}
+	if !ids[-3] || !ids[-4] {
+		t.Fatalf("root item ids = %v, want -3 and -4", ids)
+	}
+}

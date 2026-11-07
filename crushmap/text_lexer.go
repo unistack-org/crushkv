@@ -45,6 +45,7 @@ const (
 	itemBucketHash
 	itemBucketItemBeg
 	itemBucketItemName
+	itemBucketItemID
 	itemBucketItemWeight
 	itemBucketItemPos
 	itemBucketItemEnd
@@ -124,6 +125,13 @@ func lexIsDigit(r rune) bool {
 
 func (l *lex) lexCurrent() string {
 	return l.source[l.start:l.position]
+}
+
+// lexKeyword returns the pending token with surrounding whitespace removed.
+// States that terminate a token loop on a space leave that space inside
+// lexCurrent(), so keyword comparisons must trim it.
+func (l *lex) lexKeyword() string {
+	return strings.TrimSpace(l.lexCurrent())
 }
 
 func (l *lex) lexEmit(t tokType) {
@@ -214,12 +222,14 @@ func (l *lex) lexNextToken() (*item, bool) {
 	}
 }
 
+// lexErr records the first lexing error. States that call it return via
+// lexPop; lexRun then stops the run and DecodeText surfaces the error.
 func (l *lex) lexErr(e string) {
-	if l.errHandler != nil {
+	if l.err == nil {
 		l.err = errors.New(e)
+	}
+	if l.errHandler != nil {
 		l.errHandler(e)
-	} else {
-		panic(e)
 	}
 }
 
@@ -227,6 +237,9 @@ func (l *lex) lexRun() {
 	state := l.startState
 	for state != nil {
 		state = state(l)
+		if l.err != nil {
+			break
+		}
 	}
 	close(l.items)
 }

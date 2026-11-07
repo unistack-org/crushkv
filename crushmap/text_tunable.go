@@ -32,12 +32,15 @@ loop:
 			return l.lexPop()
 		case ' ':
 			break loop
+		case EOFRune:
+			l.lexErr("unexpected end of crush map")
+			return nil
 		default:
 			l.lexNext()
 		}
 	}
 
-	l.lexEmit(itemTunableKey)
+	l.lexEmitTrim(itemTunableKey)
 
 	return tunableValState
 }
@@ -52,12 +55,14 @@ loop:
 		switch r {
 		case '\n', '#', ' ':
 			break loop
+		case EOFRune:
+			break loop
 		default:
 			l.lexNext()
 		}
 	}
 
-	l.lexEmit(itemTunableVal)
+	l.lexEmitTrim(itemTunableVal)
 
 	l.lexEmit(itemTunableEnd)
 

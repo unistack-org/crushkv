@@ -24,6 +24,9 @@ func bucketStartState(l *lex) stateFn {
 	case '#':
 		l.lexErr(fmt.Sprintf("unexpected token %q", r))
 		return l.lexPop()
+	case EOFRune:
+		l.lexErr("unexpected end of crush map")
+		return nil
 	}
 
 	return bucketNameState
@@ -46,12 +49,15 @@ loop:
 		case '\n', '#':
 			l.lexErr(fmt.Sprintf("unexpected token %q", r))
 			return l.lexPop()
+		case EOFRune:
+			l.lexErr("unexpected end of crush map")
+			return nil
 		default:
 			l.lexNext()
 		}
 	}
 
-	l.lexEmit(itemBucketName)
+	l.lexEmitTrim(itemBucketName)
 	return bucketIdentState
 }
 
@@ -65,32 +71,17 @@ loop1:
 		switch r {
 		case ' ', '\n', '#', '\t':
 			break loop1
+		case EOFRune:
+			l.lexErr("unexpected end of crush map")
+			return nil
 		}
 		l.lexNext()
 	}
 
-	l.lexEmit(itemBucketID)
+	l.lexEmitTrim(itemBucketID)
 
-	l.lexTake(" \t")
-	l.lexIgnore()
-
-loop2:
-	for {
-		r := l.lexPeek()
-		switch r {
-		case ' ', '\n', '#', '\t':
-			break loop2
-		default:
-			l.lexNext()
-		}
-	}
-
-	switch l.lexCurrent() {
-	case "class":
-		l.lexIgnore()
-		return bucketIDClassState
-	}
-
+	// The next keyword (`class`, `alg`, ...) is lexed by bucketIdentState;
+	// consuming it here risks discarding it.
 	return bucketIdentState
 }
 
@@ -104,12 +95,15 @@ loop:
 		switch r {
 		case ' ', '\n', '#', '\t':
 			break loop
+		case EOFRune:
+			l.lexErr("unexpected end of crush map")
+			return nil
 		default:
 			l.lexNext()
 		}
 	}
 
-	l.lexEmit(itemBucketIDClass)
+	l.lexEmitTrim(itemBucketIDClass)
 
 	return bucketIdentState
 }
@@ -119,7 +113,7 @@ func bucketHashState(l *lex) stateFn {
 	l.lexIgnore()
 
 	l.lexTake("0123456789")
-	l.lexEmit(itemBucketHash)
+	l.lexEmitTrim(itemBucketHash)
 
 	return bucketIdentState
 }
@@ -130,13 +124,13 @@ func bucketAlgState(l *lex) stateFn {
 
 	for {
 		r := l.lexPeek()
-		if r == '\n' || r == ' ' || r == '#' {
+		if r == '\n' || r == ' ' || r == '#' || r == EOFRune {
 			break
 		}
 		l.lexNext()
 	}
 
-	l.lexEmit(itemBucketAlg)
+	l.lexEmitTrim(itemBucketAlg)
 	return bucketIdentState
 }
 
@@ -153,11 +147,14 @@ loop:
 		case '\n', '#':
 			l.lexErr(fmt.Sprintf("unexpected token %q", r))
 			return l.lexPop()
+		case EOFRune:
+			l.lexErr("unexpected end of crush map")
+			return nil
 		}
 		l.lexNext()
 	}
 
-	l.lexEmit(itemBucketItemName)
+	l.lexEmitTrim(itemBucketItemName)
 	return bucketItemIdentState
 }
 
@@ -169,25 +166,47 @@ loop:
 	for {
 		r := l.lexPeek()
 		switch r {
-		case ' ', '\n':
+		case ' ', '\n', '#':
 			break loop
-		case '#':
-			break loop
+		case '}':
+			// One-line bucket: `... item osd.1 weight 1.000 }`. End the
+			// item here and leave the brace for bucketIdentState, which
+			// closes the bucket.
+			l.lexEmit(itemBucketItemEnd)
+			return bucketIdentState
+		case EOFRune:
+			l.lexErr("unexpected end of crush map")
+			return nil
 		default:
 			l.lexNext()
 		}
 	}
 
-	switch l.lexCurrent() {
+	switch l.lexKeyword() {
 	case "weight":
 		l.lexIgnore()
 		return bucketItemWeightState
 	case "pos":
 		l.lexIgnore()
 		return bucketItemPosState
+	case "id":
+		// `item host h1 id -1 weight 1.000`: Ceph allows an explicit id on
+		// item lines (typical for nested-bucket items in maps generated with
+		// ids). The value may be negative.
+		l.lexIgnore()
+		lexSignedInt(l)
+		l.lexEmitTrim(itemBucketItemID)
+		return bucketItemIdentState
 	}
 
+	// Not an item attribute: the pending text begins the next construct
+	// (the next `item ...`, a stray token before the bucket's closing
+	// brace...). End the item and rewind so bucketIdentState re-reads it.
+	mark := l.start
 	l.lexEmit(itemBucketItemEnd)
+	l.position = mark
+	l.start = mark
+	l.rewind.clear()
 	return bucketIdentState
 }
 
@@ -196,7 +215,7 @@ func bucketItemWeightState(l *lex) stateFn {
 	l.lexIgnore()
 
 	l.lexTake(".0123456789")
-	l.lexEmit(itemBucketItemWeight)
+	l.lexEmitTrim(itemBucketItemWeight)
 
 	return bucketItemIdentState
 }
@@ -206,7 +225,7 @@ func bucketItemPosState(l *lex) stateFn {
 	l.lexIgnore()
 
 	l.lexTake("0123456789")
-	l.lexEmit(itemBucketItemPos)
+	l.lexEmitTrim(itemBucketItemPos)
 
 	return bucketItemIdentState
 }
@@ -221,6 +240,13 @@ loop:
 		switch r {
 		case ' ':
 			break loop
+		case '{':
+			// A bucket written on one line (`root r { id -2 ... }`) has a
+			// space after the brace; the brace must be consumed here, not
+			// left for the keyword switch below.
+			l.lexNext()
+			l.lexIgnore()
+			return bucketIdentState
 		case '#':
 			l.lexNext()
 			l.lexIgnore()
@@ -235,15 +261,23 @@ loop:
 			l.lexNext()
 			l.lexIgnore()
 			return bucketIdentState
+		case EOFRune:
+			l.lexErr("unexpected end of crush map (unterminated bucket)")
+			return nil
 		default:
 			l.lexNext()
 		}
 	}
 
-	switch l.lexCurrent() {
+	switch l.lexKeyword() {
 	case "id":
 		l.lexIgnore()
 		return bucketIDState
+	case "class":
+		// `id <n> class <c>`: bucketIDState leaves us here right after the
+		// id value, with `class` as the next token.
+		l.lexIgnore()
+		return bucketIDClassState
 	case "alg":
 		l.lexIgnore()
 		return bucketAlgState
@@ -256,7 +290,10 @@ loop:
 		return bucketItemState
 	}
 
-	return l.lexPop()
+	// Unknown keyword inside a bucket: skip it and keep parsing the bucket
+	// body (matches the lenient keyword handling of the states above).
+	l.lexIgnore()
+	return bucketIdentState
 }
 
 func (p *textParser) handleBucket(itype string) (*Bucket, error) {
@@ -319,6 +356,12 @@ Loop:
 			continue
 		case itemBucketItemName:
 			item.Name = tok.ivalue
+		case itemBucketItemID:
+			id, err := strconv.Atoi(tok.ivalue)
+			if err != nil {
+				return nil, err
+			}
+			item.ID = int32(id)
 		case itemBucketItemWeight:
 			id, err := strconv.ParseFloat(tok.ivalue, 32)
 			if err != nil {

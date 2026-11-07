@@ -36,6 +36,12 @@ loop:
 		switch r {
 		case ' ':
 			break loop
+		case '{':
+			// See the same fix in bucketIdentState: consume a brace that is
+			// followed by a space on a single-line rule.
+			l.lexNext()
+			l.lexIgnore()
+			return ruleIdentState
 		case '#':
 			l.lexNext()
 			l.lexIgnore()
@@ -50,12 +56,15 @@ loop:
 			l.lexNext()
 			l.lexIgnore()
 			return ruleIdentState
+		case EOFRune:
+			l.lexErr("unexpected end of crush map (unterminated rule)")
+			return nil
 		default:
 			l.lexNext()
 		}
 	}
 
-	switch l.lexCurrent() {
+	switch l.lexKeyword() {
 	case "id", "ruleset":
 		// Ceph grammar: (id | ruleset) >> posint; both set the rule id.
 		l.lexIgnore()
@@ -75,7 +84,7 @@ loop:
 	case "type":
 		l.lexIgnore()
 		lexTokenToEmit(l)
-		l.lexEmit(itemRuleType)
+		l.lexEmitTrim(itemRuleType)
 		return ruleIdentState
 	case "step":
 		l.lexIgnore()
@@ -123,17 +132,19 @@ loop:
 		switch r {
 		case ' ', '\n', '#', '\t':
 			break loop
+		case EOFRune:
+			break loop
 		default:
 			l.lexNext()
 		}
 	}
 
-	switch l.lexCurrent() {
+	switch l.lexKeyword() {
 	case "set_chooseleaf_tries", "set_choose_tries",
 		"set_choose_local_tries", "set_choose_local_fallback_tries",
 		"set_chooseleaf_vary_r", "set_chooseleaf_stable",
 		"set_msr_descents", "set_msr_collision_tries":
-		name := l.lexCurrent()
+		name := l.lexKeyword()
 		l.lexIgnore()
 		l.items <- item{itype: itemRuleStepSetGenericName, ivalue: name}
 		lexSignedInt(l)
@@ -160,6 +171,7 @@ loop:
 			l.lexEmit(itemRuleStepChooseType)
 		} else {
 			l.position = mark
+			l.start = mark
 			l.rewind.clear()
 		}
 		l.lexEmit(itemRuleStepEnd)
@@ -193,6 +205,7 @@ func ruleStepChoose(l *lex) stateFn {
 			l.lexEmit(itemRuleStepChooseType)
 		} else {
 			l.position = mark
+			l.start = mark
 			l.rewind.clear()
 		}
 		l.lexEmit(itemRuleStepEnd)
@@ -221,6 +234,7 @@ func ruleStepTake(l *lex) stateFn {
 		l.lexEmit(itemRuleStepTakeClass)
 	} else {
 		l.position = mark
+		l.start = mark
 		l.rewind.clear()
 	}
 
@@ -242,6 +256,9 @@ loop:
 		case '\n', '#':
 			l.lexErr(fmt.Sprintf("unexpected token %q", r))
 			return l.lexPop()
+		case EOFRune:
+			l.lexErr("unexpected end of crush map")
+			return nil
 		default:
 			l.lexNext()
 		}
@@ -252,6 +269,7 @@ loop:
 
 func (p *textParser) handleRule() (*Rule, error) {
 	irule := &Rule{}
+	ended := false
 
 Loop:
 	for {
@@ -260,7 +278,10 @@ Loop:
 			break Loop
 		}
 		switch tok.itype {
-		case itemEOF, itemRuleEnd:
+		case itemEOF:
+			break Loop
+		case itemRuleEnd:
+			ended = true
 			break Loop
 		case itemComment:
 			continue
@@ -309,6 +330,12 @@ Loop:
 			irule.ID = uint8(id)
 			irule.Ruleset = uint8(id) // Ceph: ruleset == rule id
 		}
+	}
+	if !ended {
+		return nil, errors.New("unexpected end of crush map (unterminated rule)")
+	}
+	if irule.Name == "" {
+		return nil, errors.New("rule without a name")
 	}
 	return irule, nil
 }

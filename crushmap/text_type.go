@@ -15,13 +15,13 @@ func typeIDState(l *lex) stateFn {
 	l.lexIgnore()
 	for {
 		r := l.lexPeek()
-		if r == '\n' || r == ' ' || r == '#' {
+		if r == '\n' || r == ' ' || r == '#' || r == EOFRune {
 			break
 		}
 		l.lexNext()
 	}
 
-	l.lexEmit(itemTypeID)
+	l.lexEmitTrim(itemTypeID)
 	return typeNameState
 }
 
@@ -31,13 +31,13 @@ func typeNameState(l *lex) stateFn {
 
 	for {
 		r := l.lexPeek()
-		if r == '\n' || r == ' ' || r == '#' {
+		if r == '\n' || r == ' ' || r == '#' || r == EOFRune {
 			break
 		}
 		l.lexNext()
 	}
 
-	l.lexEmit(itemTypeName)
+	l.lexEmitTrim(itemTypeName)
 	l.lexEmit(itemTypeEnd)
 	return l.lexPop()
 }

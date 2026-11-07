@@ -26,12 +26,15 @@ loop:
 			return l.lexPop()
 		case ' ':
 			break loop
+		case EOFRune:
+			l.lexErr("unexpected end of crush map")
+			return nil
 		default:
 			l.lexNext()
 		}
 	}
 
-	l.lexEmit(itemDeviceID)
+	l.lexEmitTrim(itemDeviceID)
 	return deviceNameState
 }
 
@@ -45,12 +48,15 @@ loop:
 		switch r {
 		case ' ', '\n', '#', '\t':
 			break loop
+		case EOFRune:
+			l.lexErr("unexpected end of crush map")
+			return nil
 		default:
 			l.lexNext()
 		}
 	}
 
-	l.lexEmit(itemDeviceName)
+	l.lexEmitTrim(itemDeviceName)
 	return deviceIdentState
 }
 
@@ -65,6 +71,14 @@ loop:
 		case '\n', '#':
 			l.lexEmit(itemDeviceEnd)
 			return l.lexPop()
+		case EOFRune:
+			if l.lexCurrent() != "" {
+				// trailing keyword (e.g. "class") with no value
+				l.lexErr("unexpected end of crush map")
+				return nil
+			}
+			l.lexEmit(itemDeviceEnd)
+			return l.lexPop()
 		case ' ':
 			break loop
 		default:
@@ -72,7 +86,7 @@ loop:
 		}
 	}
 
-	switch l.lexCurrent() {
+	switch l.lexKeyword() {
 	case "class":
 		l.lexIgnore()
 		return deviceClassState
@@ -91,12 +105,20 @@ loop:
 		switch r {
 		case '\n', '#', ' ':
 			break loop
+		case EOFRune:
+			if l.lexCurrent() == "" {
+				l.lexErr("unexpected end of crush map")
+				return nil
+			}
+			l.lexEmitTrim(itemDeviceClass)
+			l.lexEmit(itemDeviceEnd)
+			return l.lexPop()
 		default:
 			l.lexNext()
 		}
 	}
 
-	l.lexEmit(itemDeviceClass)
+	l.lexEmitTrim(itemDeviceClass)
 	return deviceIdentState
 }
 

@@ -1,6 +1,7 @@
 package crushmap
 
 import (
+	"errors"
 	"fmt"
 )
 
@@ -16,6 +17,9 @@ loop:
 		switch r {
 		case ' ':
 			break loop
+		case EOFRune:
+			l.lexErr("unexpected end of crush map")
+			return nil
 		default:
 			l.lexNext()
 		}
@@ -71,7 +75,7 @@ func topState(l *lex) stateFn {
 func (cmap *Map) DecodeText(data []byte) error {
 	mapItems := make(map[string]int32)
 	p := &textParser{l: lexNew(string(data), topState)}
-	p.l.lexStartSync()
+	p.l.lexStart()
 
 loop:
 	for {
@@ -122,6 +126,13 @@ loop:
 		}
 	}
 
+	// The lexer stops on the first error and closes the items channel; a
+	// closed channel (done) without an itemEOF token means the input ended
+	// mid-construct. Reading l.err after the channel is closed is safe.
+	if p.l.err != nil {
+		return p.l.err
+	}
+
 	for idx := range cmap.Buckets {
 		id, ok := mapItems[cmap.Buckets[idx].TypeName]
 		if !ok {
@@ -139,6 +150,10 @@ loop:
 			}
 			it.ID = iid
 		}
+	}
+
+	if len(cmap.Buckets) == 0 && len(cmap.Rules) == 0 {
+		return errors.New("empty crush map")
 	}
 
 	cmap.rulesSort()
